@@ -1,0 +1,6 @@
+version: 3
+
+tunnels:
+  prestige-collection:
+    proto: http
+    addr: 3000

@@ -1,0 +1,12 @@
+{
+  "account": {
+    "email": "your-ngrok-email@example.com",
+    "authToken": "your-ngrok-auth-token-here"
+  },
+  "tunnel": {
+    "proto": "http",
+    "addr": "3000",
+    "subdomain": null
+  },
+  "notes": "Copy this file to ngrok.config.local.json and fill in your actual credentials. ngrok.config.local.json is in .gitignore."
+}
