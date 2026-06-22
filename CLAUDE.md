@@ -2,37 +2,45 @@
 
 See parent directory's CLAUDE.md for full architecture documentation and commands.
 
-## Vercel Deployment (NEW)
+## Payment Integration (SafePay)
 
-This backend is configured to deploy to Vercel with a serverless function for SafePay payment redirects.
+### Payment Callback Handler
+`POST /api/payments/callback/:status` receives SafePay redirects after payment completion.
 
-### Files
-- `vercel.json` — Deployment config
-- `api/payments/callback.ts` — Vercel serverless function that handles SafePay redirects
+**Flow:**
+1. SafePay redirects to `GET /api/payments/callback/success?order_id=...&tracker=...`
+2. Backend stores tracker token in database (needed for app verification)
+3. Renders branded HTML page with:
+   - Success/failure badge and message (using brand colors #111827, #F2C94C)
+   - JavaScript that attempts to open deep link: `prestigecollection://payment-callback?...`
+   - Fallback "Return to App" button for web users
+   - Auto-detection of app installation with app store link
+4. On mobile: Deep link triggers OS to launch app with payment callback data
+5. On web: User sees branded page with retry button and support contact
 
-### To Deploy
+**Security:**
+- Webhook is the authoritative source (not this callback)
+- SafePay signature validation via custom HMAC verification
+- Tracker token stored server-side for app verification
+
+**Configuration:**
+```env
+SAFEPAY_ENVIRONMENT=sandbox           # or 'production'
+SAFEPAY_API_KEY=sec_xxxx...           # SafePay dashboard
+SAFEPAY_V1_SECRET=xxxx...             # SafePay dashboard
+SAFEPAY_WEBHOOK_SECRET=xxxx...        # SafePay dashboard → Webhooks
+SAFEPAY_REDIRECT_BASE_URL=https://api.prestige-men.com  # For production
+```
+
+### Vercel Deployment
+
 ```bash
-# Option 1: Vercel CLI
+# Deploy with Vercel CLI
 npm i -g vercel
 vercel deploy --prod
 
-# Option 2: GitHub + Vercel dashboard (recommended)
-# Push to GitHub, then import to vercel.com
+# Or use GitHub integration (recommended)
+# Push to GitHub → Connect to Vercel dashboard
 ```
 
-### Environment Variable
-After deployment, update `.env`:
-```env
-SAFEPAY_REDIRECT_BASE_URL=https://your-vercel-deployment.vercel.app
-```
-
-### Implementation Notes
-- `api/payments/callback.ts` uses plain JavaScript (no `@vercel/node` types) for runtime compatibility
-- **CRITICAL:** Function calls backend to store tracker token BEFORE redirecting
-  - Without this, payment verification fails ("Payment not yet confirmed")
-  - Backend stores tracker so app can verify payment status
-- Function receives SafePay query params and redirects to deep link (`prestigecollection://payment-callback?...`)
-- On mobile: deep link opens the Flutter app automatically + app verifies payment
-- On web browsers: shows success page (deep link doesn't work on web)
-- Webhook is authoritative source; this callback is best-effort verification
-- Eliminates ngrok free-tier warning page entirely
+After deployment, update environment variables in Vercel dashboard to match your production domain.

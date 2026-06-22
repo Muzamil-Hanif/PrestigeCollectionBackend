@@ -180,11 +180,11 @@ export class PaymentsController {
 
   @Get('callback/:status')
   @ApiOperation({
-    summary: 'SafePay redirect handler - redirects back to app via deep link',
+    summary: 'SafePay redirect handler - branded callback page with deep link redirect',
     description:
-      'SafePay redirects here after payment. This endpoint stores the tracker token ' +
-      'server-side and immediately redirects back to the Flutter app via deep link. ' +
-      'No web page shown — just store and redirect.',
+      'SafePay redirects here after payment. Renders a branded page that attempts to ' +
+      'redirect back to the app via deep link (mobile) with a fallback button and message ' +
+      'for web users. Stores the tracker token for server-side verification.',
   })
   async paymentCallback(
     @Param('status') status: string,
@@ -193,9 +193,8 @@ export class PaymentsController {
     @Query('sig') sig: string | undefined,
     @Res() res: Response,
   ) {
-    // Start with what SafePay told us in the redirect URL.
-    // The webhook system is the authoritative source of payment truth.
-    // This callback is best-effort verification only.
+    const isSuccess = status === 'success';
+
     // Store tracker token server-side (authoritative source is webhook)
     if (orderId && tracker) {
       const order = await this.ordersService
@@ -222,25 +221,247 @@ export class PaymentsController {
       }
     }
 
-    // Immediately redirect back to app via deep link
+    // Build deep link for mobile app
     const deepLinkParams = new URLSearchParams({
-      status: status === 'success' ? 'success' : 'cancelled',
+      status: isSuccess ? 'success' : 'cancelled',
       ...(orderId ? { order_id: orderId } : {}),
       ...(tracker ? { tracker } : {}),
     });
 
     const deepLink = `prestigecollection://payment-callback?${deepLinkParams.toString()}`;
 
-    // Try deep link first (mobile). If it fails in browser, fall back to redirect.
-    const deepLinkHtml = `<!DOCTYPE html><html><head><script>
-      window.location.href = ${JSON.stringify(deepLink)};
+    // Render branded HTML page with auto-redirect and fallback button
+    const brandedHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prestige Collection - Payment ${isSuccess ? 'Successful' : 'Cancelled'}</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+      background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 450px;
+      width: 100%;
+      background: #1f2937;
+      border-radius: 20px;
+      padding: 40px 30px;
+      text-align: center;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+    }
+
+    .icon-container {
+      width: 100px;
+      height: 100px;
+      margin: 0 auto 30px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 50px;
+      position: relative;
+    }
+
+    .success {
+      background: linear-gradient(135deg, rgba(242, 201, 76, 0.2), rgba(0, 0, 0, 0.1));
+      border: 2px solid #f2c94c;
+      color: #f2c94c;
+    }
+
+    .failed {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(0, 0, 0, 0.1));
+      border: 2px solid #ef4444;
+      color: #ef4444;
+    }
+
+    h1 {
+      color: #ffffff;
+      font-size: 28px;
+      font-weight: 800;
+      margin-bottom: 12px;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 15px;
+      line-height: 1.5;
+      margin-bottom: 32px;
+    }
+
+    .button-container {
+      display: flex;
+      gap: 12px;
+      flex-direction: column;
+    }
+
+    .primary-btn, .secondary-btn {
+      padding: 16px 24px;
+      border: none;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      letter-spacing: -0.3px;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    .primary-btn {
+      background: #f2c94c;
+      color: #111827;
+      box-shadow: 0 4px 15px rgba(242, 201, 76, 0.25);
+    }
+
+    .primary-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(242, 201, 76, 0.35);
+    }
+
+    .secondary-btn {
+      background: transparent;
+      color: #f2c94c;
+      border: 1.5px solid #f2c94c;
+      opacity: 0.8;
+    }
+
+    .secondary-btn:hover {
+      opacity: 1;
+      background: rgba(242, 201, 76, 0.1);
+    }
+
+    .loading-text {
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 14px;
+      margin-top: 24px;
+      animation: fadeInOut 1.5s infinite;
+    }
+
+    @keyframes fadeInOut {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+
+    @media (max-width: 480px) {
+      .container {
+        padding: 30px 20px;
+      }
+      h1 {
+        font-size: 24px;
+      }
+      .icon-container {
+        width: 80px;
+        height: 80px;
+        font-size: 40px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon-container ${isSuccess ? 'success' : 'failed'}">
+      ${isSuccess ? '✓' : '✕'}
+    </div>
+
+    <h1>${isSuccess ? 'Payment Successful' : 'Payment Cancelled'}</h1>
+    <p class="subtitle">
+      ${isSuccess
+        ? 'Thank you! Your payment has been processed successfully. Returning you to the app...'
+        : 'Your payment was cancelled. You can try again or contact support if you need help.'}
+    </p>
+
+    <div class="button-container">
+      <button class="primary-btn" id="returnBtn">
+        Return to Prestige Collection
+      </button>
+      <button class="secondary-btn" id="contactBtn" onclick="window.location='mailto:support@prestigecollection.com'">
+        Contact Support
+      </button>
+    </div>
+
+    <div class="loading-text" id="loadingText">
+      Opening app...
+    </div>
+  </div>
+
+  <script>
+    const deepLink = ${JSON.stringify(deepLink)};
+    const returnBtn = document.getElementById('returnBtn');
+    const loadingText = document.getElementById('loadingText');
+
+    // Try to open the deep link
+    function openDeepLink() {
+      // Method 1: Direct navigation (works on mobile)
+      window.location.href = deepLink;
+
+      // Method 2: Use iframe (alternative approach for some browsers)
       setTimeout(() => {
-        window.location.href = ${JSON.stringify(this.frontendUrl + '/orders')};
-      }, 2000);
-    </script></head><body>Redirecting...</body></html>`;
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = deepLink;
+        document.body.appendChild(iframe);
+      }, 100);
+    }
+
+    // Attempt deep link immediately on page load
+    window.addEventListener('load', () => {
+      openDeepLink();
+    });
+
+    // Also try on user click for better UX
+    returnBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      loadingText.textContent = 'Opening app...';
+      openDeepLink();
+
+      // If deep link fails, show it's clickable
+      setTimeout(() => {
+        loadingText.textContent = 'Tap to return to app';
+        returnBtn.style.opacity = '0.6';
+      }, 3000);
+    });
+
+    // If user hasn't been taken back after 5 seconds, let them know app might not be installed
+    setTimeout(() => {
+      const textNode = document.createTextNode(
+        'Having trouble? Make sure the Prestige Collection app is installed, or '
+      );
+      const link = document.createElement('a');
+      link.href = 'https://play.google.com/store/apps/details?id=com.prestigecollection.app';
+      link.textContent = 'download it here';
+      link.style.color = '#f2c94c';
+      link.style.textDecoration = 'underline';
+      link.style.cursor = 'pointer';
+
+      loadingText.innerHTML = '';
+      loadingText.appendChild(textNode);
+      loadingText.appendChild(link);
+      loadingText.appendChild(document.createTextNode('.'));
+    }, 5000);
+  </script>
+</body>
+</html>`;
 
     res.set('Content-Type', 'text/html; charset=utf-8');
-    res.send(deepLinkHtml);
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.send(brandedHtml);
   }
 
   @Post('webhook')
