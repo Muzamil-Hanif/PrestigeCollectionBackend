@@ -1,5 +1,3 @@
-import { VercelRequest, VercelResponse } from '@vercel/node';
-
 /**
  * Vercel Serverless Function: SafePay redirect handler
  *
@@ -12,26 +10,31 @@ import { VercelRequest, VercelResponse } from '@vercel/node';
  *   - tracker: SafePay transaction tracker token
  *   - status: 'success' or 'cancelled' (from the URL path)
  */
-export default function handler(req: VercelRequest, res: VercelResponse) {
-  const { order_id, tracker, status } = req.query;
+export default function handler(req: any, res: any) {
+  try {
+    const { order_id, tracker, status } = req.query;
 
-  // Build deep link back to Flutter app
-  const deepLinkParams = new URLSearchParams({
-    status: (status as string) === 'success' ? 'success' : 'cancelled',
-    ...(order_id ? { order_id: order_id as string } : {}),
-    ...(tracker ? { tracker: tracker as string } : {}),
-  });
+    // Build deep link back to Flutter app
+    const deepLinkParams = new URLSearchParams({
+      status: status === 'success' ? 'success' : 'cancelled',
+      ...(order_id ? { order_id } : {}),
+      ...(tracker ? { tracker } : {}),
+    });
 
-  const deepLink = `prestigecollection://payment-callback?${deepLinkParams.toString()}`;
+    const deepLink = `prestigecollection://payment-callback?${deepLinkParams.toString()}`;
 
-  // Return minimal HTML that redirects to deep link
-  const html = `<!DOCTYPE html><html><head><script>
-    window.location.href = ${JSON.stringify(deepLink)};
-    setTimeout(() => {
-      window.location.href = 'https://prestige-men.web.app/orders';
-    }, 2000);
-  </script></head><body>Redirecting...</body></html>`;
+    // Return minimal HTML that redirects to deep link
+    const html = `<!DOCTYPE html><html><head><script>
+      window.location.href = '${deepLink}';
+      setTimeout(() => {
+        window.location.href = 'https://prestige-men.web.app/orders';
+      }, 2000);
+    </script></head><body>Redirecting...</body></html>`;
 
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(html);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.status(200).send(html);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    res.status(500).json({ error: 'Redirect failed', message: errorMsg });
+  }
 }
