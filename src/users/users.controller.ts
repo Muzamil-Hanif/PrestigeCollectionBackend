@@ -19,10 +19,7 @@ import {
   ApiConsumes,
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'node:path';
-import { mkdirSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { memoryStorage } from 'multer';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -81,17 +78,7 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(
     FileInterceptor('profilePhoto', {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          const uploadDir = 'uploads/profile-photos';
-          mkdirSync(uploadDir, { recursive: true });
-          cb(null, uploadDir);
-        },
-        filename: (_req, file, cb) => {
-          const extension = extname(file.originalname || '').toLowerCase();
-          cb(null, `${randomUUID()}${extension || '.jpg'}`);
-        },
-      }),
+      storage: memoryStorage(),
       limits: { fileSize: 10 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
         if (!file.mimetype?.startsWith('image/')) {
@@ -142,7 +129,7 @@ export class UsersController {
   async updateProfile(
     @Request() req,
     @Body() updateProfileDto: UpdateProfileDto,
-    @UploadedFile() profilePhotoFile?: { path: string },
+    @UploadedFile() profilePhotoFile?: { buffer: Buffer; mimetype: string },
   ) {
     const payload = updateProfileDto as UpdateProfileDto & { email?: string };
     if (payload.email !== undefined) {
@@ -150,7 +137,7 @@ export class UsersController {
     }
 
     if (profilePhotoFile) {
-      payload.profilePhoto = `/${profilePhotoFile.path.replaceAll('\\', '/')}`;
+      payload.profilePhoto = `data:${profilePhotoFile.mimetype};base64,${profilePhotoFile.buffer.toString('base64')}`;
     }
 
     const user = await this.usersService.updateProfileInfo(req.user.userId, payload);

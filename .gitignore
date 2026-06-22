@@ -43,3 +43,4 @@ coverage/
 
 # ngrok credentials (keep local, never commit)
 ngrok.config.local.json
+.vercel

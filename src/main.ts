@@ -1,8 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { json, static as expressStatic, urlencoded } from 'express';
-import { join } from 'node:path';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -11,7 +10,6 @@ async function bootstrap() {
   // Increase request body limits to prevent 413 errors on larger payloads.
   app.use(json({ limit: '10mb' }));
   app.use(urlencoded({ limit: '10mb', extended: true }));
-  app.use('/uploads', expressStatic(join(process.cwd(), 'uploads')));
 
   // Enable CORS for Flutter app
   app.enableCors({

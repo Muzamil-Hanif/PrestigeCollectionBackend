@@ -24,7 +24,7 @@ A robust NestJS backend API for the Prestige Collection e-commerce platform, bui
 1. **Navigate to the backend directory:**
 
    ```bash
-   cd prestige-men-backend
+   cd prestige-collection-backend
    ```
 
 2. **Install dependencies:**
@@ -118,7 +118,7 @@ Authorization: Bearer <your-jwt-token>
 ## 📁 Project Structure
 
 ```
-prestige-men-backend/
+prestige-collection-backend/
 ├── src/
 │   ├── auth/              # Authentication module
 │   │   ├── guards/        # JWT guards

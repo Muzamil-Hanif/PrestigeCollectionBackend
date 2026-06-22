@@ -1,4 +1,4 @@
-# CLAUDE.md — prestige-men-backend
+# CLAUDE.md — prestige-collection-backend
 
 See parent directory's CLAUDE.md for full architecture documentation and commands.
 
@@ -39,7 +39,7 @@ SAFEPAY_ENVIRONMENT=sandbox           # or 'production'
 SAFEPAY_API_KEY=sec_xxxx...           # SafePay dashboard
 SAFEPAY_V1_SECRET=xxxx...             # SafePay dashboard
 SAFEPAY_WEBHOOK_SECRET=xxxx...        # SafePay dashboard → Webhooks
-SAFEPAY_REDIRECT_BASE_URL=https://api.prestige-men.com  # For production
+SAFEPAY_REDIRECT_BASE_URL=https://api.prestigecollection.com  # For production
 ```
 
 ### Vercel Deployment
