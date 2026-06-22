@@ -54,3 +54,5 @@ vercel deploy --prod
 ```
 
 After deployment, update environment variables in Vercel dashboard to match your production domain.
+
+**Important:** All `/api/payments/*` routes are served by the NestJS app — there is no separate `api/` folder with standalone Vercel functions. A legacy `api/payments/callback.ts` serverless function previously existed alongside a `vercel.json` route override (`"src": "/api/payments/callback/(.*)"`) that hijacked the callback path before it reached `PaymentsController`. That function tried to re-POST to `BACKEND_URL` (unset in production, defaulting to `http://localhost:3000`), so it silently failed to store the SafePay tracker token — `PaymentsController.verifyPayment()` then fell back to the pre-checkout session token (`requestId`) instead of the real tracker, which SafePay's Fetch Tracker API correctly rejects with "cannot find tracker ... using keys" since that ID was never promoted to a real tracker. Both the file and `vercel.json` were removed; do not reintroduce a standalone `api/` function for payment callbacks — all logic belongs in `PaymentsController`.
