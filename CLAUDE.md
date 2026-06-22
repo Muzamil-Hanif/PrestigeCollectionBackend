@@ -28,8 +28,11 @@ SAFEPAY_REDIRECT_BASE_URL=https://your-vercel-deployment.vercel.app
 
 ### Implementation Notes
 - `api/payments/callback.ts` uses plain JavaScript (no `@vercel/node` types) for runtime compatibility
+- **CRITICAL:** Function calls backend to store tracker token BEFORE redirecting
+  - Without this, payment verification fails ("Payment not yet confirmed")
+  - Backend stores tracker so app can verify payment status
 - Function receives SafePay query params and redirects to deep link (`prestigecollection://payment-callback?...`)
-- On mobile: deep link opens the Flutter app automatically
-- On web browsers: shows a success page (deep link doesn't work on web)
-- No backend API calls needed — webhook handles payment confirmation separately
+- On mobile: deep link opens the Flutter app automatically + app verifies payment
+- On web browsers: shows success page (deep link doesn't work on web)
+- Webhook is authoritative source; this callback is best-effort verification
 - Eliminates ngrok free-tier warning page entirely
