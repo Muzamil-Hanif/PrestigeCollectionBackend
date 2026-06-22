@@ -112,23 +112,30 @@ export class PaymentsController {
   async verifyPayment(
     @Request() req,
     @Param('orderId') orderId: string,
-    @Param('requestId') _requestId: string,
+    @Param('requestId') requestId: string,
   ) {
     const order = await this.ordersService.findOne(orderId, req.user.userId);
 
-    // If no tracker token is stored yet, the user hasn't completed the SafePay payment flow
+    // If no tracker token is stored yet, try to use requestId as fallback
     if (!order.paymentTrackerToken) {
-      return {
-        success: false,
-        paymentStatus: order.paymentStatus || 'pending',
-        transactionId: null,
-        amount: order.grandTotal,
-        note: 'Payment not yet confirmed. Please complete the SafePay payment flow.',
-      };
+      if (!requestId || requestId === 'undefined') {
+        return {
+          success: false,
+          paymentStatus: order.paymentStatus || 'pending',
+          transactionId: null,
+          amount: order.grandTotal,
+          note: 'Payment not yet confirmed. Please complete the SafePay payment flow.',
+        };
+      }
+      // Try to verify using requestId from SafePay initiation
+      this.logger.log(
+        `Verify: No tracker token for order ${orderId}, attempting fallback with requestId ${requestId}`,
+      );
     }
 
     try {
-      const paymentInfo = await this.safepayService.verifyPayment(order.paymentTrackerToken);
+      const trackerToUse = order.paymentTrackerToken || requestId;
+      const paymentInfo = await this.safepayService.verifyPayment(trackerToUse);
 
       // Amount tolerance: SafePay may return a net amount (post-fee) that
       // differs slightly from grandTotal. Accept within ±1 PKR.
@@ -158,12 +165,20 @@ export class PaymentsController {
         await this.cartService.clearCart(req.user.userId).catch(() => null);
       }
 
-      return {
+      const response: any = {
         success: paymentInfo.status === 'captured',
         paymentStatus,
         transactionId: paymentInfo.transactionId,
         amount: paymentInfo.amount,
       };
+
+      // Add note if using fallback (requestId instead of tracker token)
+      if (!order.paymentTrackerToken && requestId) {
+        response.note =
+          'Payment verified using fallback method. Webhook processing may still be in progress.';
+      }
+
+      return response;
     } catch (error) {
       this.logger.error('Payment verification failed:', error);
       // If SafePay's API is unavailable, return order's current payment status
@@ -197,12 +212,10 @@ export class PaymentsController {
 
     // Store tracker token server-side (authoritative source is webhook)
     if (orderId && tracker) {
-      const order = await this.ordersService
-        .findOne(orderId)
-        .catch(() => null);
+      try {
+        const order = await this.ordersService.findOne(orderId);
 
-      if (order) {
-        try {
+        if (order) {
           await this.ordersService.updatePaymentInfo(orderId, {
             paymentStatus: order.paymentStatus || 'pending',
             transactionId: order.paymentTransactionId || '',
@@ -212,12 +225,14 @@ export class PaymentsController {
           this.logger.log(
             `Callback: stored tracker token for order ${orderId}`,
           );
-        } catch (error) {
-          this.logger.warn(
-            `Could not store tracker for order ${orderId}:`,
-            error instanceof Error ? error.message : error,
-          );
+        } else {
+          this.logger.warn(`Callback: Order ${orderId} not found`);
         }
+      } catch (error) {
+        this.logger.error(
+          `Callback: Failed to store tracker for order ${orderId}:`,
+          error instanceof Error ? error.message : error,
+        );
       }
     }
 
@@ -235,7 +250,9 @@ export class PaymentsController {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="format-detection" content="telephone=no">
   <title>Prestige Collection - Payment ${isSuccess ? 'Successful' : 'Cancelled'}</title>
   <style>
     * {
@@ -244,15 +261,21 @@ export class PaymentsController {
       box-sizing: border-box;
     }
 
+    html, body {
+      width: 100%;
+      height: 100%;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
         'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
       background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
-      min-height: 100vh;
+      background-attachment: fixed;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 20px;
+      min-height: 100vh;
     }
 
     .container {
@@ -264,6 +287,18 @@ export class PaymentsController {
       text-align: center;
       border: 1px solid rgba(255, 255, 255, 0.15);
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+      animation: slideUp 0.5s ease-out;
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .icon-container {
@@ -276,6 +311,18 @@ export class PaymentsController {
       justify-content: center;
       font-size: 50px;
       position: relative;
+      animation: scaleIn 0.5s ease-out 0.2s both;
+    }
+
+    @keyframes scaleIn {
+      from {
+        transform: scale(0.8);
+        opacity: 0;
+      }
+      to {
+        transform: scale(1);
+        opacity: 1;
+      }
     }
 
     .success {
@@ -460,8 +507,11 @@ export class PaymentsController {
 </html>`;
 
     res.set('Content-Type', 'text/html; charset=utf-8');
-    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.send(brandedHtml);
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.status(200).send(brandedHtml);
   }
 
   @Post('webhook')

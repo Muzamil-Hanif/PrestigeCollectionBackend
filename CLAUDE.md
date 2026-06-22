@@ -5,23 +5,33 @@ See parent directory's CLAUDE.md for full architecture documentation and command
 ## Payment Integration (SafePay)
 
 ### Payment Callback Handler
-`POST /api/payments/callback/:status` receives SafePay redirects after payment completion.
+`GET /api/payments/callback/:status` receives SafePay redirects after payment completion.
 
 **Flow:**
-1. SafePay redirects to `GET /api/payments/callback/success?order_id=...&tracker=...`
-2. Backend stores tracker token in database (needed for app verification)
+1. SafePay redirects browser to `GET /api/payments/callback/success?order_id=...&tracker=...`
+2. Backend stores tracker token in database with improved error handling and logging
 3. Renders branded HTML page with:
    - Success/failure badge and message (using brand colors #111827, #F2C94C)
-   - JavaScript that attempts to open deep link: `prestigecollection://payment-callback?...`
+   - Smooth animations (slideUp, scaleIn) for better UX
+   - JavaScript that attempts deep link open: `prestigecollection://payment-callback?...`
+   - Iframe fallback for alternative browser support
    - Fallback "Return to App" button for web users
-   - Auto-detection of app installation with app store link
+   - Auto-detection of app installation with app store link after 5s timeout
+   - Safe DOM manipulation using `createElement`/`appendChild` (no innerHTML vulnerabilities)
 4. On mobile: Deep link triggers OS to launch app with payment callback data
 5. On web: User sees branded page with retry button and support contact
+
+**Verification Endpoint Improvements:**
+- `GET /api/payments/verify/:orderId/:requestId` now supports fallback using `requestId` if tracker token not yet stored
+- Returns detailed `note` field with status messages (e.g., "Webhook processing in progress...")
+- If SafePay API is unreachable, returns order status from database with fallback note
+- Properly handles timing issues when webhook hasn't processed yet
 
 **Security:**
 - Webhook is the authoritative source (not this callback)
 - SafePay signature validation via custom HMAC verification
-- Tracker token stored server-side for app verification
+- Tracker token stored server-side with proper error handling
+- Enhanced logging for debugging and monitoring
 
 **Configuration:**
 ```env
