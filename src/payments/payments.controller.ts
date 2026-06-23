@@ -29,7 +29,13 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 @Controller('payments')
 export class PaymentsController {
   private readonly logger = new Logger(PaymentsController.name);
-  private readonly frontendUrl: string;
+  /**
+   * Origin of the Flutter **web** build. On web the `prestigecollection://`
+   * deep link does nothing, so the callback page redirects the browser here
+   * (to `/#/payment-callback?...`) instead of leaving the user stranded.
+   * Empty string ⇒ no web redirect (mobile-only deployments).
+   */
+  private readonly webRedirectUrl: string;
 
   constructor(
     private readonly safepayService: SafepayService,
@@ -37,8 +43,10 @@ export class PaymentsController {
     private readonly cartService: CartService,
     private readonly configService: ConfigService,
   ) {
-    this.frontendUrl = (
-      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:8080'
+    this.webRedirectUrl = (
+      this.configService.get<string>('SAFEPAY_WEB_REDIRECT_URL') ||
+      this.configService.get<string>('FRONTEND_URL') ||
+      ''
     ).replace(/\/+$/, '');
   }
 
@@ -116,76 +124,130 @@ export class PaymentsController {
   ) {
     const order = await this.ordersService.findOne(orderId, req.user.userId);
 
-    // If no tracker token is stored yet, try to use requestId as fallback
-    if (!order.paymentTrackerToken) {
-      if (!requestId || requestId === 'undefined') {
-        return {
-          success: false,
-          paymentStatus: order.paymentStatus || 'pending',
-          transactionId: null,
-          amount: order.grandTotal,
-          note: 'Payment not yet confirmed. Please complete the SafePay payment flow.',
-        };
-      }
-      // Try to verify using requestId from SafePay initiation
-      this.logger.log(
-        `Verify: No tracker token for order ${orderId}, attempting fallback with requestId ${requestId}`,
-      );
+    // 1) Webhook-first: if the authoritative webhook has already confirmed the
+    //    capture, return success immediately without touching SafePay's API.
+    if (order.paymentStatus === 'captured') {
+      return {
+        success: true,
+        paymentStatus: 'captured',
+        pending: false,
+        transactionId: order.paymentTransactionId || null,
+        amount: order.grandTotal,
+      };
+    }
+    if (order.paymentStatus === 'failed') {
+      return {
+        success: false,
+        paymentStatus: 'failed',
+        pending: false,
+        transactionId: order.paymentTransactionId || null,
+        amount: order.grandTotal,
+        note: 'Payment was not completed.',
+      };
     }
 
+    // 2) Resolve a tracker to query — using ONLY server-stored identifiers bound
+    //    to THIS order. We never trust a client-supplied tracker as proof of
+    //    payment: an attacker could otherwise submit any other order's captured
+    //    tracker (of a matching amount) to mark their own unpaid order as paid.
+    //    - paymentTrackerToken: stored by the SafePay redirect callback/webhook,
+    //      which carry SafePay's own order_id binding.
+    //    - paymentSessionToken: the session token we issued at initiation for
+    //      this order; only honoured when the client echoes back that exact
+    //      value (it can't be used to fetch a *captured* tracker anyway, so it
+    //      simply keeps the result `pending` until the callback/webhook lands).
+    const cleanRequestId =
+      requestId && requestId !== 'undefined' ? requestId : undefined;
+    const sessionMatches =
+      !!cleanRequestId && cleanRequestId === order.paymentSessionToken;
+    const trackerToUse =
+      order.paymentTrackerToken || (sessionMatches ? cleanRequestId : undefined);
+
+    if (!trackerToUse) {
+      return {
+        success: false,
+        paymentStatus: order.paymentStatus || 'pending',
+        pending: true,
+        transactionId: null,
+        amount: order.grandTotal,
+        note: 'Payment not yet confirmed. Please complete the SafePay payment flow.',
+      };
+    }
+
+    const usingFallback = !order.paymentTrackerToken;
+
     try {
-      const trackerToUse = order.paymentTrackerToken || requestId;
       const paymentInfo = await this.safepayService.verifyPayment(trackerToUse);
 
-      // Amount tolerance: SafePay may return a net amount (post-fee) that
-      // differs slightly from grandTotal. Accept within ±1 PKR.
-      const amountMatches =
-        Math.abs(paymentInfo.amount - order.grandTotal) <= 1;
-
-      if (!amountMatches) {
-        this.logger.warn(
-          `Payment amount mismatch for order ${orderId}: ` +
-            `expected ${order.grandTotal}, got ${paymentInfo.amount}`,
-        );
-        throw new BadRequestException(
-          'Payment amount does not match order total',
-        );
+      // 3a) Still processing / not confirmable yet — keep the client polling.
+      if (paymentInfo.status === 'pending') {
+        return {
+          success: false,
+          paymentStatus: 'pending',
+          pending: true,
+          transactionId: order.paymentTransactionId || null,
+          amount: order.grandTotal,
+          note: usingFallback
+            ? 'Awaiting payment confirmation. Webhook processing may still be in progress.'
+            : 'Awaiting payment confirmation from SafePay.',
+        };
       }
 
-      const paymentStatus =
-        paymentInfo.status === 'captured' ? 'captured' : 'failed';
-      await this.ordersService.updatePaymentInfo(orderId, {
-        paymentStatus,
-        transactionId: paymentInfo.transactionId,
-        status:
-          paymentStatus === 'captured' ? 'payment_successful' : 'cancelled',
-      });
+      // 3b) Definitive capture — validate amount, then mark the order paid.
+      if (paymentInfo.status === 'captured') {
+        // Amount tolerance: SafePay may return a net amount (post-fee) that
+        // differs slightly from grandTotal. Accept within ±1 PKR.
+        const amountMatches =
+          Math.abs(paymentInfo.amount - order.grandTotal) <= 1;
+        if (!amountMatches) {
+          this.logger.warn(
+            `Payment amount mismatch for order ${orderId}: ` +
+              `expected ${order.grandTotal}, got ${paymentInfo.amount}`,
+          );
+          throw new BadRequestException(
+            'Payment amount does not match order total',
+          );
+        }
 
-      if (paymentStatus === 'captured') {
+        await this.ordersService.updatePaymentInfo(orderId, {
+          paymentStatus: 'captured',
+          transactionId: paymentInfo.transactionId,
+          status: 'payment_successful',
+        });
         await this.cartService.clearCart(req.user.userId).catch(() => null);
+
+        return {
+          success: true,
+          paymentStatus: 'captured',
+          pending: false,
+          transactionId: paymentInfo.transactionId,
+          amount: paymentInfo.amount,
+        };
       }
 
-      const response: any = {
-        success: paymentInfo.status === 'captured',
-        paymentStatus,
+      // 3c) Definitive failure — mark the order cancelled.
+      await this.ordersService.updatePaymentInfo(orderId, {
+        paymentStatus: 'failed',
         transactionId: paymentInfo.transactionId,
-        amount: paymentInfo.amount,
+        status: 'cancelled',
+      });
+      return {
+        success: false,
+        paymentStatus: 'failed',
+        pending: false,
+        transactionId: paymentInfo.transactionId,
+        amount: order.grandTotal,
+        note: 'Payment was not completed.',
       };
-
-      // Add note if using fallback (requestId instead of tracker token)
-      if (!order.paymentTrackerToken && requestId) {
-        response.note =
-          'Payment verified using fallback method. Webhook processing may still be in progress.';
-      }
-
-      return response;
     } catch (error) {
       this.logger.error('Payment verification failed:', error);
-      // If SafePay's API is unavailable, return order's current payment status
-      // This handles cases where SafePay's tracker API is down/unreliable
+      // Unexpected error (e.g. amount mismatch / SafePay unavailable). Do NOT
+      // mark the order failed here — return the DB state and let the client keep
+      // polling / the webhook confirm authoritatively.
       return {
         success: order.paymentStatus === 'captured',
         paymentStatus: order.paymentStatus || 'pending',
+        pending: order.paymentStatus !== 'captured',
         transactionId: order.paymentTransactionId || null,
         amount: order.grandTotal,
         note: 'Could not reach SafePay verification API, returning order status from database',
@@ -195,7 +257,8 @@ export class PaymentsController {
 
   @Get('callback/:status')
   @ApiOperation({
-    summary: 'SafePay redirect handler - branded callback page with deep link redirect',
+    summary:
+      'SafePay redirect handler - branded callback page with deep link redirect',
     description:
       'SafePay redirects here after payment. Renders a branded page that attempts to ' +
       'redirect back to the app via deep link (mobile) with a fallback button and message ' +
@@ -244,6 +307,14 @@ export class PaymentsController {
     });
 
     const deepLink = `prestigecollection://payment-callback?${deepLinkParams.toString()}`;
+
+    // Web fallback: the custom scheme never fires inside a desktop/mobile
+    // browser running the Flutter web build, so redirect the browser back into
+    // the web app's hash route, carrying the same params. Empty when no web
+    // origin is configured (mobile-only deployments) — then we keep the page.
+    const webRedirect = this.webRedirectUrl
+      ? `${this.webRedirectUrl}/#/payment-callback?${deepLinkParams.toString()}`
+      : '';
 
     // Render branded HTML page with auto-redirect and fallback button
     const brandedHtml = `<!DOCTYPE html>
@@ -429,9 +500,11 @@ export class PaymentsController {
 
     <h1>${isSuccess ? 'Payment Successful' : 'Payment Cancelled'}</h1>
     <p class="subtitle">
-      ${isSuccess
-        ? 'Thank you! Your payment has been processed successfully. Returning you to the app...'
-        : 'Your payment was cancelled. You can try again or contact support if you need help.'}
+      ${
+        isSuccess
+          ? 'Thank you! Your payment has been processed successfully. Returning you to the app...'
+          : 'Your payment was cancelled. You can try again or contact support if you need help.'
+      }
     </p>
 
     <div class="button-container">
@@ -450,10 +523,16 @@ export class PaymentsController {
 
   <script>
     const deepLink = ${JSON.stringify(deepLink)};
+    const webRedirect = ${JSON.stringify(webRedirect)};
     const returnBtn = document.getElementById('returnBtn');
     const loadingText = document.getElementById('loadingText');
 
-    // Try to open the deep link
+    // Heuristic: a custom-scheme deep link only resolves inside a real mobile
+    // OS (or an installed app), never inside a desktop browser. We use the UA
+    // to decide whether to even attempt it before falling back to the web app.
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+    // Try to open the mobile deep link
     function openDeepLink() {
       // Method 1: Direct navigation (works on mobile)
       window.location.href = deepLink;
@@ -467,16 +546,43 @@ export class PaymentsController {
       }, 100);
     }
 
-    // Attempt deep link immediately on page load
+    // Send the browser back into the Flutter web app (hash route).
+    function goToWebApp() {
+      if (webRedirect) {
+        window.location.replace(webRedirect);
+      }
+    }
+
+    // On load: web → redirect straight into the web app; mobile → try the deep
+    // link first, and if the page is still here shortly after (app not installed
+    // / scheme not handled) fall back to the web app when one is configured.
     window.addEventListener('load', () => {
+      if (!isMobile && webRedirect) {
+        goToWebApp();
+        return;
+      }
       openDeepLink();
+      if (webRedirect) {
+        setTimeout(() => {
+          if (!document.hidden) goToWebApp();
+        }, 1500);
+      }
     });
 
     // Also try on user click for better UX
     returnBtn.addEventListener('click', (e) => {
       e.preventDefault();
       loadingText.textContent = 'Opening app...';
-      openDeepLink();
+      if (isMobile) {
+        openDeepLink();
+        if (webRedirect) {
+          setTimeout(() => {
+            if (!document.hidden) goToWebApp();
+          }, 1500);
+        }
+      } else {
+        goToWebApp();
+      }
 
       // If deep link fails, show it's clickable
       setTimeout(() => {
