@@ -58,7 +58,8 @@ export class SafepayService {
         : 'sandbox';
     this.apiKey = this.configService.get<string>('SAFEPAY_API_KEY') || '';
     this.v1Secret = this.configService.get<string>('SAFEPAY_V1_SECRET') || '';
-    const webhookSecret = this.configService.get<string>('SAFEPAY_WEBHOOK_SECRET') || '';
+    const webhookSecret =
+      this.configService.get<string>('SAFEPAY_WEBHOOK_SECRET') || '';
     this.redirectBaseUrl = (
       this.configService.get<string>('SAFEPAY_REDIRECT_BASE_URL') || ''
     ).replace(/\/+$/, '');
@@ -138,8 +139,13 @@ export class SafepayService {
 
       return { requestId: token, redirectUrl };
     } catch (error) {
-      this.logger.error('SafePay initiation error:', error instanceof Error ? error.stack : error);
-      throw new BadRequestException('Failed to initiate payment. Please try again.');
+      this.logger.error(
+        'SafePay initiation error:',
+        error instanceof Error ? error.stack : error,
+      );
+      throw new BadRequestException(
+        'Failed to initiate payment. Please try again.',
+      );
     }
   }
 
@@ -149,18 +155,29 @@ export class SafepayService {
    * and may not work reliably. The authoritative source is the webhook
    * callback which is handled in PaymentsController.handleWebhook().
    *
-   * This method attempts to verify synchronously but should not be relied upon
-   * as the sole confirmation mechanism. The webhook flow is more reliable.
+   * This method returns a TRI-STATE result so the caller can tell apart a
+   * payment that genuinely failed from one that simply isn't confirmable yet:
+   *   - 'captured' — tracker ended with a captured charge attempt
+   *   - 'failed'   — tracker reached a terminal non-captured state
+   *   - 'pending'  — not confirmable yet (timeout / unreachable / still in flight)
+   *
+   * It never throws for an unreachable/slow API; it returns 'pending' instead so
+   * the client keeps polling rather than showing a false "Payment Failed". The
+   * webhook flow remains the authoritative confirmation.
    */
   async verifyPayment(
     requestId: string,
   ): Promise<{ transactionId: string; status: string; amount: number }> {
     if (!this.isConfigured) {
-      throw new BadRequestException('Card payments are temporarily unavailable.');
+      throw new BadRequestException(
+        'Card payments are temporarily unavailable.',
+      );
     }
 
     try {
-      this.logger.debug(`Attempting to verify payment with tracker: ${requestId}`);
+      this.logger.debug(
+        `Attempting to verify payment with tracker: ${requestId}`,
+      );
 
       // Wrap with timeout to prevent indefinite hangs if SafePay API is unreachable
       const verifyWithTimeout = async () => {
@@ -173,7 +190,9 @@ export class SafepayService {
           ),
         ).catch(async () => {
           // If that fails, try with auth header as fallback
-          this.logger.debug('First attempt (no auth) failed, trying with auth header');
+          this.logger.debug(
+            'First attempt (no auth) failed, trying with auth header',
+          );
           return firstValueFrom(
             this.httpService.get<TrackerEnvelope>(
               `${this.trackerBaseUrl}/reporter/api/v1/payments/${requestId}`,
@@ -193,7 +212,8 @@ export class SafepayService {
         verifyWithTimeout(),
         new Promise((_, reject) =>
           setTimeout(
-            () => reject(new Error('Payment verification timeout after 8 seconds')),
+            () =>
+              reject(new Error('Payment verification timeout after 8 seconds')),
             8000,
           ),
         ),
@@ -205,7 +225,11 @@ export class SafepayService {
 
       const tracker = this.extractTracker((response as any)?.data);
       if (!tracker) {
-        throw new BadRequestException('Payment verification failed: tracker not found in response');
+        // Tracker not present yet — treat as not-confirmable-yet, not a failure.
+        this.logger.debug(
+          `Tracker not found in response for ${requestId}; reporting pending`,
+        );
+        return { transactionId: requestId, status: 'pending', amount: 0 };
       }
 
       // SafePay uses `attempts[]` (not `charges[]`). We still fall back to
@@ -215,9 +239,31 @@ export class SafepayService {
         tracker.charges?.[0] ??
         tracker.payment_method?.charges?.[0];
 
-      const captured =
-        tracker.state === 'TRACKER_ENDED' &&
-        (attempt?.status === 'captured' || attempt?.status === 'CAPTURED');
+      const attemptStatus = (attempt?.status || '').toLowerCase();
+      const trackerEnded = tracker.state === 'TRACKER_ENDED';
+
+      const captured = trackerEnded && attemptStatus === 'captured';
+
+      // Terminal failure: the session ended without a capture, or the attempt
+      // reached an explicit terminal-failure status. Everything else (still in
+      // flight, no attempt yet) is reported as pending so the client keeps polling.
+      const terminalFailureStatuses = [
+        'failed',
+        'declined',
+        'rejected',
+        'cancelled',
+        'canceled',
+        'error',
+        'expired',
+        'void',
+        'voided',
+      ];
+      const failed =
+        !captured &&
+        ((trackerEnded && Boolean(attempt)) ||
+          terminalFailureStatuses.includes(attemptStatus));
+
+      const status = captured ? 'captured' : failed ? 'failed' : 'pending';
 
       // Amount resolution priority: attempt.net (post-fee) → attempt.amount → tracker.net
       // All values are in paisa (PKR × 100); divide by 100 to get PKR.
@@ -225,7 +271,7 @@ export class SafepayService {
 
       return {
         transactionId: attempt?.id ?? tracker.token ?? requestId,
-        status: captured ? 'captured' : 'failed',
+        status,
         amount: rawAmount / 100,
       };
     } catch (error) {
@@ -239,21 +285,29 @@ export class SafepayService {
           message: axiosError.message,
         });
       } else {
-        this.logger.error('SafePay verification error:', error instanceof Error ? error.stack : error);
+        this.logger.error(
+          'SafePay verification error:',
+          error instanceof Error ? error.stack : error,
+        );
       }
-      throw new BadRequestException(
-        'Failed to verify payment status. Please wait for webhook confirmation or refresh the page.',
-      );
+      // The tracker API is unreliable/undocumented. A timeout or transport error
+      // does NOT mean the payment failed — report 'pending' so the client keeps
+      // polling and the webhook can confirm authoritatively.
+      return { transactionId: requestId, status: 'pending', amount: 0 };
     }
   }
 
-  private extractTracker(envelope: TrackerEnvelope): TrackerPayload | undefined {
+  private extractTracker(
+    envelope: TrackerEnvelope,
+  ): TrackerPayload | undefined {
     const dataField = envelope?.data;
-    if (dataField && 'tracker' in dataField && dataField.tracker) return dataField.tracker;
-    if (dataField && 'state' in dataField) return dataField as TrackerPayload;
+    if (dataField && 'tracker' in dataField && dataField.tracker)
+      return dataField.tracker;
+    if (dataField && 'state' in dataField) return dataField;
     if (envelope?.tracker) return envelope.tracker;
     // Some SafePay responses embed tracker fields at the root alongside `ok`
-    if (envelope && 'state' in envelope) return envelope as unknown as TrackerPayload;
+    if (envelope && 'state' in envelope)
+      return envelope as unknown as TrackerPayload;
     return undefined;
   }
 
@@ -266,7 +320,10 @@ export class SafepayService {
   }
 
   /** Validate the `X-SFPY-Signature` header on incoming webhook calls. */
-  validateWebhookSignature(body: Record<string, any>, headers: Record<string, any>): boolean {
+  validateWebhookSignature(
+    body: Record<string, any>,
+    headers: Record<string, any>,
+  ): boolean {
     try {
       return this.client.verify.webhook({ body, headers });
     } catch (error) {

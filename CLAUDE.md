@@ -19,13 +19,30 @@ See parent directory's CLAUDE.md for full architecture documentation and command
    - Auto-detection of app installation with app store link after 5s timeout
    - Safe DOM manipulation using `createElement`/`appendChild` (no innerHTML vulnerabilities)
 4. On mobile: Deep link triggers OS to launch app with payment callback data
-5. On web: User sees branded page with retry button and support contact
+5. On web: If `SAFEPAY_WEB_REDIRECT_URL` (or `FRONTEND_URL`) is set, the page redirects the
+   browser to `<web-app>/#/payment-callback?status=...&order_id=...&tracker=...` so the
+   Flutter web build can resume the verify→success flow instead of stranding the user on the
+   HTML page. The UA-based heuristic redirects desktop browsers immediately and uses the deep
+   link only on mobile (with a web fallback if the app isn't installed).
 
-**Verification Endpoint Improvements:**
-- `GET /api/payments/verify/:orderId/:requestId` now supports fallback using `requestId` if tracker token not yet stored
-- Returns detailed `note` field with status messages (e.g., "Webhook processing in progress...")
-- If SafePay API is unreachable, returns order status from database with fallback note
-- Properly handles timing issues when webhook hasn't processed yet
+**Verification Endpoint (tri-state, webhook-first):**
+- `GET /api/payments/verify/:orderId/:requestId`. Verification uses **only server-stored,
+  order-bound identifiers** — never a client-supplied tracker (that would let an attacker
+  submit another order's captured tracker of a matching amount to mark their own unpaid order
+  paid). Resolution order: stored `paymentTrackerToken` (set by the SafePay redirect
+  callback/webhook, which carry SafePay's order_id binding) → session `requestId`, but only
+  when it matches the `paymentSessionToken` we issued for this order at initiation.
+- **Webhook-first:** if the order is already `captured` (webhook landed), returns success
+  immediately without calling SafePay.
+- **Tri-state response** — returns `{ success, paymentStatus, pending, ... }`:
+  - `captured` → `success:true` (order marked `payment_successful`, cart cleared)
+  - `failed` → `success:false, pending:false` (order marked `cancelled`) — only on a
+    *definitive* SafePay terminal-failure state
+  - `pending` → `success:false, pending:true` — used for timeouts/unreachable API/in-flight
+    payments so the client keeps polling instead of seeing a false "Payment Failed". The
+    order is **not** marked cancelled.
+- `SafepayService.verifyPayment()` never throws on a slow/unreachable tracker API — it
+  returns `pending`. The webhook remains the authoritative confirmation.
 
 **Security:**
 - Webhook is the authoritative source (not this callback)
@@ -40,6 +57,7 @@ SAFEPAY_API_KEY=sec_xxxx...           # SafePay dashboard
 SAFEPAY_V1_SECRET=xxxx...             # SafePay dashboard
 SAFEPAY_WEBHOOK_SECRET=xxxx...        # SafePay dashboard → Webhooks
 SAFEPAY_REDIRECT_BASE_URL=https://api.prestigecollection.com  # For production
+SAFEPAY_WEB_REDIRECT_URL=https://app.prestigecollection.com   # Flutter web origin; callback redirects browser here on web (falls back to FRONTEND_URL)
 ```
 
 ### Vercel Deployment
