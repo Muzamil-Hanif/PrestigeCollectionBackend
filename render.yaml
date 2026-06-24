@@ -1,0 +1,38 @@
+# Render Blueprint for the Prestige Collection backend.
+# Deploy: push this repo, then in Render → New → Blueprint → pick this repo.
+# Secrets (sync: false) are NOT stored here — set them in the Render dashboard.
+services:
+  - type: web
+    name: prestige-collection-backend
+    runtime: node
+    plan: free
+    region: singapore # closest Render region to Pakistan; change if you prefer
+    branch: main # the branch Render auto-deploys
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /api # AppController GET /api returns 200 "Hello World!"
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: CORS_ORIGIN
+        value: "*"
+      - key: SAFEPAY_ENVIRONMENT
+        value: sandbox
+      # --- Secrets: set these in the Render dashboard (Environment tab) ---
+      - key: MONGODB_URI # mongodb+srv://...  (MongoDB Atlas connection string)
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: SAFEPAY_API_KEY
+        sync: false
+      - key: SAFEPAY_V1_SECRET
+        sync: false
+      - key: SAFEPAY_WEBHOOK_SECRET
+        sync: false
+      - key: SAFEPAY_REDIRECT_BASE_URL # https://<your-render-app>.onrender.com
+        sync: false
+      - key: SAFEPAY_WEB_REDIRECT_URL # Flutter web origin (e.g. your deployed web app)
+        sync: false

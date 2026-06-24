@@ -60,17 +60,26 @@ SAFEPAY_REDIRECT_BASE_URL=https://api.prestigecollection.com  # For production
 SAFEPAY_WEB_REDIRECT_URL=https://app.prestigecollection.com   # Flutter web origin; callback redirects browser here on web (falls back to FRONTEND_URL)
 ```
 
-### Vercel Deployment
+### Deployment (Render + MongoDB Atlas)
 
-```bash
-# Deploy with Vercel CLI
-npm i -g vercel
-vercel deploy --prod
+This is a **long-running NestJS server** (`main.ts` calls `app.listen()`), so it must run
+on a **persistent Node host** — Render, Railway, Fly.io, a VPS, etc. It is **not** a Vercel
+serverless app: Vercel runs exported request handlers, and deploying this `main.ts` there
+crashes with `No exports found in module "main.js"`. Do not add a serverless adapter / `api/`
+function unless you intentionally migrate the whole app to that model.
 
-# Or use GitHub integration (recommended)
-# Push to GitHub → Connect to Vercel dashboard
-```
+The database must be **MongoDB Atlas** (or any reachable hosted Mongo) — a cloud host cannot
+reach a local MongoDB. Set `MONGODB_URI` to the Atlas `mongodb+srv://...` string and allow
+the host's egress in Atlas → Network Access (`0.0.0.0/0` is simplest).
 
-After deployment, update environment variables in Vercel dashboard to match your production domain.
+**Render (blueprint):** [`render.yaml`](render.yaml) defines the web service —
+`buildCommand: npm install && npm run build`, `startCommand: npm run start:prod`,
+`healthCheckPath: /api` (AppController `GET /api` returns 200). Secrets (`MONGODB_URI`,
+`JWT_SECRET`, all `SAFEPAY_*`) are `sync: false` and set in the Render dashboard. Render
+injects `PORT`; `main.ts` binds `0.0.0.0`. Set `SAFEPAY_REDIRECT_BASE_URL` to the
+`https://<app>.onrender.com` URL so SafePay's redirect + webhook reach the service.
 
-**Important:** All `/api/payments/*` routes are served by the NestJS app — there is no separate `api/` folder with standalone Vercel functions. A legacy `api/payments/callback.ts` serverless function previously existed alongside a `vercel.json` route override (`"src": "/api/payments/callback/(.*)"`) that hijacked the callback path before it reached `PaymentsController`. That function tried to re-POST to `BACKEND_URL` (unset in production, defaulting to `http://localhost:3000`), so it silently failed to store the SafePay tracker token — `PaymentsController.verifyPayment()` then fell back to the pre-checkout session token (`requestId`) instead of the real tracker, which SafePay's Fetch Tracker API correctly rejects with "cannot find tracker ... using keys" since that ID was never promoted to a real tracker. Both the file and `vercel.json` were removed; do not reintroduce a standalone `api/` function for payment callbacks — all logic belongs in `PaymentsController`.
+Seed the first admin after the DB is connected: `npm run seed:admin`
+(`MONGODB_URI=<atlas> node scripts/seed-admin.js`) → `admin@prestige-men.com` / `Admin@12345`.
+
+**Important:** All `/api/payments/*` routes are served by the NestJS app — there is no separate `api/` folder with standalone serverless functions. A legacy `api/payments/callback.ts` serverless function previously existed alongside a `vercel.json` route override (`"src": "/api/payments/callback/(.*)"`) that hijacked the callback path before it reached `PaymentsController`. That function tried to re-POST to `BACKEND_URL` (unset in production, defaulting to `http://localhost:3000`), so it silently failed to store the SafePay tracker token — `PaymentsController.verifyPayment()` then fell back to the pre-checkout session token (`requestId`) instead of the real tracker, which SafePay's Fetch Tracker API correctly rejects with "cannot find tracker ... using keys" since that ID was never promoted to a real tracker. Both the file and `vercel.json` were removed; do not reintroduce a standalone `api/` function for payment callbacks — all logic belongs in `PaymentsController`.
