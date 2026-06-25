@@ -9,8 +9,14 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 
-const MONGODB_URI =
-  process.env.MONGODB_URI || 'mongodb://localhost:27017/prestige-men';
+const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) {
+  console.error(
+    'MONGODB_URI is not set. Pass it inline, e.g.\n' +
+      '  MONGODB_URI=mongodb+srv://... node scripts/seed-admin.js',
+  );
+  process.exit(1);
+}
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@prestige-men.com';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin@12345';

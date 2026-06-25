@@ -17,7 +17,11 @@ import jwtConfig from './config/jwt.config';
     ConfigModule.forRoot({
       isGlobal: true,
       load: [databaseConfig, jwtConfig],
-      envFilePath: '.env',
+      // NODE_ENV selects the environment file. NODE_ENV must be set by the
+      // OS / npm script (not inside the env file itself), since it decides
+      // which file to load. production -> Atlas, anything else -> local Mongo.
+      envFilePath:
+        process.env.NODE_ENV === 'production' ? '.env.production' : '.env.local',
     }),
     DatabaseModule,
     UsersModule,

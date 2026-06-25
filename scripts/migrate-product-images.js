@@ -7,8 +7,14 @@ const {
   resolveProductImageUrls,
 } = require('../dist/products/image-url.resolver');
 
-const MONGODB_URI =
-  process.env.MONGODB_URI || 'mongodb://localhost:27017/prestige-men';
+const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) {
+  console.error(
+    'MONGODB_URI is not set. Pass it inline, e.g.\n' +
+      '  MONGODB_URI=mongodb+srv://... node scripts/migrate-product-images.js',
+  );
+  process.exit(1);
+}
 
 const productSchema = new mongoose.Schema({}, { strict: false, collection: 'products' });
 const Product = mongoose.model('Product', productSchema);
