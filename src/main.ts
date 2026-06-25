@@ -58,8 +58,11 @@ async function bootstrap() {
     },
   });
 
+  // Bind to 0.0.0.0 so hosted platforms (Render/Railway/containers) can route
+  // external traffic to the container — not just loopback. PORT is injected by
+  // the host; falls back to 3000 locally.
   const port = process.env.PORT || 3000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   console.log(
     `🚀 Prestige Collection Backend is running on: http://localhost:${port}/api`,
   );
